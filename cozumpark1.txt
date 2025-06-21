@@ -1,0 +1,32 @@
+# https://www.cozumpark.com/active-directory-ou-delegasyonlarini-powershell-ile-raporlama/
+# Tüm OU'ları al
+$OUs = Get-ADOrganizationalUnit -Filter * | Select-Object -ExpandProperty DistinguishedName
+
+$schemaIDGUID = @{}
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Şema GUID'lerini ve Extended Rights GUID'lerini yükle
+Get-ADObject -SearchBase (Get-ADRootDSE).schemaNamingContext -LDAPFilter '(schemaIDGUID=*)' -Properties name, schemaIDGUID |
+ForEach-Object { $schemaIDGUID.add([System.GUID]$_.schemaIDGUID, $_.name) }
+
+Get-ADObject -SearchBase "CN=Extended-Rights,$((Get-ADRootDSE).configurationNamingContext)" -LDAPFilter '(objectClass=controlAccessRight)' -Properties name, rightsGUID |
+ForEach-Object { $schemaIDGUID.add([System.GUID]$_.rightsGUID, $_.name) }
+
+$ErrorActionPreference = 'Continue'
+$report = @()
+
+# Her OU için ACL bilgilerini topla
+ForEach ($OU in $OUs) {
+    $report += Get-Acl -Path "AD:\$OU" |
+    Select-Object -ExpandProperty Access |
+    Select-Object @{name='organizationalUnit';expression={$OU}}, `
+                  @{name='objectTypeName';expression={if ($_.objectType.ToString() -eq '00000000-0000-0000-0000-000000000000') {'All'} else { $schemaIDGUID[$_.objectType] }}}, `
+                  @{name='inheritedObjectTypeName';expression={ $schemaIDGUID[$_.inheritedObjectType] }}, `
+                  *
+}
+
+# Sistem hesaplarını filtrele ve sonucu GridView'de göster
+$report | Where-Object {
+    ($_.IdentityReference -notlike "*BUILTIN*") -and
+    ($_.IdentityReference -notlike "*NT AUTHORITY*")
+} | Out-GridView
